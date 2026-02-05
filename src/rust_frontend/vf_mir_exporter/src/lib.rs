@@ -2460,23 +2460,31 @@ mod vf_mir_builder {
         fn encode_bin_op(bin_op: mir::BinOp, mut bin_op_cpn: bin_op_cpn::Builder<'_>) {
             match bin_op {
                 mir::BinOp::Add => bin_op_cpn.set_add(()),
+                mir::BinOp::AddUnchecked => bin_op_cpn.set_add_unchecked(()),
+                mir::BinOp::AddWithOverflow => bin_op_cpn.set_add_with_overflow(()),
                 mir::BinOp::Sub => bin_op_cpn.set_sub(()),
+                mir::BinOp::SubUnchecked => bin_op_cpn.set_sub_unchecked(()),
+                mir::BinOp::SubWithOverflow => bin_op_cpn.set_sub_with_overflow(()),
                 mir::BinOp::Mul => bin_op_cpn.set_mul(()),
+                mir::BinOp::MulUnchecked => bin_op_cpn.set_mul_unchecked(()),
+                mir::BinOp::MulWithOverflow => bin_op_cpn.set_mul_with_overflow(()),
                 mir::BinOp::Div => bin_op_cpn.set_div(()),
                 mir::BinOp::Rem => bin_op_cpn.set_rem(()),
                 mir::BinOp::BitXor => bin_op_cpn.set_bit_xor(()),
                 mir::BinOp::BitAnd => bin_op_cpn.set_bit_and(()),
                 mir::BinOp::BitOr => bin_op_cpn.set_bit_or(()),
                 mir::BinOp::Shl => bin_op_cpn.set_shl(()),
+                mir::BinOp::ShlUnchecked => bin_op_cpn.set_shl_unchecked(()),
                 mir::BinOp::Shr => bin_op_cpn.set_shr(()),
+                mir::BinOp::ShrUnchecked => bin_op_cpn.set_shr_unchecked(()),
                 mir::BinOp::Eq => bin_op_cpn.set_eq(()),
                 mir::BinOp::Lt => bin_op_cpn.set_lt(()),
                 mir::BinOp::Le => bin_op_cpn.set_le(()),
                 mir::BinOp::Ne => bin_op_cpn.set_ne(()),
                 mir::BinOp::Ge => bin_op_cpn.set_ge(()),
                 mir::BinOp::Gt => bin_op_cpn.set_gt(()),
+                mir::BinOp::Cmp => bin_op_cpn.set_cmp(()),
                 mir::BinOp::Offset => bin_op_cpn.set_offset(()),
-                _ => todo!(),
             }
         }
 

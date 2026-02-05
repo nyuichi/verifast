@@ -630,21 +630,30 @@ struct Rvalue {
         struct BinOp {
             union {
                 add @0: Void;
+                addUnchecked @17: Void;
+                addWithOverflow @18: Void;
                 sub @1: Void;
+                subUnchecked @19: Void;
+                subWithOverflow @20: Void;
                 mul @2: Void;
+                mulUnchecked @21: Void;
+                mulWithOverflow @22: Void;
                 div @3: Void;
                 rem @4: Void;
                 bitXor @5: Void;
                 bitAnd @6: Void;
                 bitOr @7: Void;
                 shl @8: Void;
+                shlUnchecked @23: Void;
                 shr @9: Void;
+                shrUnchecked @24: Void;
                 eq @10: Void;
                 lt @11: Void;
                 le @12: Void;
                 ne @13: Void;
                 ge @14: Void;
                 gt @15: Void;
+                cmp @25: Void;
                 offset @16: Void;
             }
         }

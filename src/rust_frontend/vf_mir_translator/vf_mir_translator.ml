@@ -2839,23 +2839,32 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
     let translate_bin_op (bin_op_cpn : BinOpRd.t) =
       let open BinOpRd in
       match get bin_op_cpn with
-      | Add -> Ok Ast.Add
-      | Sub -> Ok Ast.Sub
-      | Mul -> Ok Ast.Mul
-      | Div -> Ok Ast.Div
-      | Rem -> Ok Ast.Mod
-      | BitXor -> Ok Ast.BitXor
-      | BitAnd -> Ok Ast.BitAnd
-      | BitOr -> Ok Ast.BitOr
-      | Shl -> failwith "Todo: BinOp::Shl"
-      | Shr -> failwith "Todo: BinOp::Shr"
-      | Eq -> Ok Ast.Eq
-      | Lt -> Ok Ast.Lt
-      | Le -> Ok Ast.Le
-      | Ne -> Ok Ast.Neq
-      | Ge -> Ok Ast.Ge
-      | Gt -> Ok Ast.Gt
-      | Offset -> failwith "Todo: BinOp::Offset"
+      | Add -> Ok (`Op Ast.Add)
+      | AddUnchecked -> Ok (`Op Ast.Add)
+      | AddWithOverflow -> Ok (`Overflow "core::intrinsics::add_with_overflow")
+      | Sub -> Ok (`Op Ast.Sub)
+      | SubUnchecked -> Ok (`Op Ast.Sub)
+      | SubWithOverflow -> Ok (`Overflow "core::intrinsics::sub_with_overflow")
+      | Mul -> Ok (`Op Ast.Mul)
+      | MulUnchecked -> Ok (`Op Ast.Mul)
+      | MulWithOverflow -> Ok (`Overflow "core::intrinsics::mul_with_overflow")
+      | Div -> Ok (`Op Ast.Div)
+      | Rem -> Ok (`Op Ast.Mod)
+      | BitXor -> Ok (`Op Ast.BitXor)
+      | BitAnd -> Ok (`Op Ast.BitAnd)
+      | BitOr -> Ok (`Op Ast.BitOr)
+      | Shl -> Ok (`Op Ast.ShiftLeft)
+      | ShlUnchecked -> Ok (`Op Ast.ShiftLeft)
+      | Shr -> Ok (`Op Ast.ShiftRight)
+      | ShrUnchecked -> Ok (`Op Ast.ShiftRight)
+      | Eq -> Ok (`Op Ast.Eq)
+      | Lt -> Ok (`Op Ast.Lt)
+      | Le -> Ok (`Op Ast.Le)
+      | Ne -> Ok (`Op Ast.Neq)
+      | Ge -> Ok (`Op Ast.Ge)
+      | Gt -> Ok (`Op Ast.Gt)
+      | Cmp -> Ok (`Cmp)
+      | Offset -> Ok (`Op Ast.Add)
       | Undefined _ -> Error (`TrBinOp "Unknown binary operator")
 
     let translate_un_op (un_op_cpn : UnOpRd.t) =
@@ -3412,6 +3421,27 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
                       Ast.Var (loc, tmp_vl),
                       Ast.Var (loc, tmp_vr) )
               in
+              let rhs_expr =
+                match operator with
+                | `Op operator ->
+                    Ast.Operation (loc, operator, [ exprl; exprr ])
+                | `Overflow intrinsic_name ->
+                    Ast.CallExpr
+                      ( loc,
+                        intrinsic_name,
+                        [],
+                        [],
+                        [ Ast.LitPat exprl; Ast.LitPat exprr ],
+                        Static )
+                | `Cmp ->
+                    Ast.CallExpr
+                      ( loc,
+                        "core::intrinsics::three_way_compare",
+                        [],
+                        [],
+                        [ Ast.LitPat exprl; Ast.LitPat exprr ],
+                        Static )
+              in
               let assign_stmt =
                 Ast.ExprStmt
                   (Ast.AssignExpr
@@ -3419,7 +3449,7 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
                        lhs_place,
                        (if lhs_place_is_mutable then Mutation
                         else Initialization),
-                       Ast.Operation (loc, operator, [ exprl; exprr ]) ))
+                       rhs_expr ))
               in
               match rvalue_binder_stmts with
               | [] -> Ok [ assign_stmt ]
