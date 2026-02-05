@@ -340,6 +340,9 @@ lem array__to_u8s_<T>(p: *T, size: usize);
     req [?f]p[..size] |-> _;
     ens [f](p as *u8)[..size * std::mem::size_of::<T>()] |-> _ &*& p as usize % std::mem::align_of::<T>() == 0;
 
+pred_ctor slice_share<T>()(k: lifetime_t, t: thread_id_t, l: *[T]) = exists(?elems) &*& [_]frac_borrow(k, mk_array(l as *T, l.len(), elems));
+type_pred_def for<T> <[T]>.share = slice_share::<T>;
+
 fix is_utf8_tail(b: u8) -> bool {
     0x80 <= b && b <= 0xBF
 }

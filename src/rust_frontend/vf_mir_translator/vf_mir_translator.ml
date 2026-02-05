@@ -1727,10 +1727,19 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
           size;
           own;
           shr =
-            (fun _k _t _l ->
-              Error
-                "Expressing the shared ownership of an array is not yet \
-                 supported");
+            (fun k t l ->
+              let* fbc = full_bor_content t l in
+              Ok
+                (Ast.CoefAsn
+                   ( loc,
+                     DummyPat,
+                     Ast.CallExpr
+                       ( loc,
+                         "frac_borrow",
+                         [],
+                         [],
+                         [ LitPat k; LitPat fbc ],
+                         Static ) )));
           full_bor_content;
           points_to;
           pointee_fbc = None;
@@ -1764,10 +1773,15 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
           size;
           own;
           shr =
-            (fun _k _t _l ->
-              Error
-                "Expressing the shared ownership of a slice is not yet \
-                 supported");
+            (fun k t l ->
+              Ok
+                (Ast.CoefAsn
+                   ( loc,
+                     DummyPat,
+                     ExprCallExpr
+                       ( loc,
+                         TypePredExpr (loc, vf_ty, "share"),
+                         [ LitPat k; LitPat t; LitPat l ] ) )));
           full_bor_content;
           points_to;
           pointee_fbc = None;
