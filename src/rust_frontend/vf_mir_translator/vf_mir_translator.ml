@@ -1666,20 +1666,56 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
     let* elem_ty_info = translate_ty elem_ty_cpn loc in
     let elem_ty = elem_ty_info.vf_ty in
     let len_cpn = array_ty_cpn.size in
-    let* (CastExpr (_, _, IntLit (_, len, _, _, _))) =
-      translate_ty_const len_cpn loc
+    let len_ty =
+      let open VfMirRd.ConstKind in
+      match len_cpn.kind with
+      | Param param_cpn -> Ast.IdentTypeExpr (loc, None, param_cpn.name)
+      | Value _ -> (
+          match translate_ty_const len_cpn loc with
+          | Ok len_expr -> (
+              match len_expr with
+              | CastExpr (_, _, IntLit (_, len, _, _, _))
+              | IntLit (_, len, _, _, _) ->
+                  let len_int = Big_int.int_of_big_int len in
+                  Ast.LiteralConstTypeExpr (loc, len_int)
+              | Var (_, name) -> Ast.IdentTypeExpr (loc, None, name)
+              | WVar (_, name, _) -> Ast.IdentTypeExpr (loc, None, name)
+              | _ -> Ast.InferredTypeExpr loc)
+          | Error _ -> Ast.InferredTypeExpr loc)
+      | Infer | Bound | Placeholder | Unevaluated | Error | Expr ->
+          Ast.InferredTypeExpr loc
     in
     let vf_ty =
-      Ast.StaticArrayTypeExpr
-        (loc, elem_ty, LiteralConstTypeExpr (loc, Big_int.int_of_big_int len))
+      Ast.StaticArrayTypeExpr (loc, elem_ty, len_ty)
     in
     let size = Ast.SizeofExpr (loc, TypeExpr vf_ty) in
-    let own tid vs =
-      Error "Expressing ownership of an array is not yet supported"
+    let array_elems_expr array_expr =
+      Ast.CallExpr
+        ( loc,
+          "Array_elems",
+          [ elem_ty; len_ty ],
+          [],
+          [ LitPat array_expr ],
+          Static )
     in
+    let slice_of_elems_expr elems_expr =
+      Ast.CallExpr
+        (loc, "slice_of_elems", [ elem_ty ], [], [ LitPat elems_expr ], Static)
+    in
+    let array_own_expr tid array_expr =
+      let elems_expr = array_elems_expr array_expr in
+      let slice_expr = slice_of_elems_expr elems_expr in
+      Ast.CallExpr
+        (loc, "slice_own", [ elem_ty ], [], [ LitPat tid; LitPat slice_expr ], Static)
+    in
+    let own tid v = Ok (array_own_expr tid v) in
     let full_bor_content t l =
-      Error
-        "Expressing the full borrow content of an array is not yet supported"
+      let array_var = "array" in
+      let array_pat = Ast.VarPat (loc, array_var) in
+      let array_expr = Ast.Var (loc, array_var) in
+      let pts = Ast.PointsTo (loc, l, RegularPointsTo, array_pat) in
+      let own_asn = array_own_expr t array_expr in
+      Ok (Ast.Sep (loc, pts, own_asn))
     in
     let points_to tid l vid_op =
       let* pat = RustBelt.Aux.vid_op_to_var_pat vid_op loc in
@@ -1691,7 +1727,7 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
           size;
           own;
           shr =
-            (fun k t l ->
+            (fun _k _t _l ->
               Error
                 "Expressing the shared ownership of an array is not yet \
                  supported");
@@ -1707,8 +1743,12 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
     let elem_ty = elem_ty_info.vf_ty in
     let vf_ty = Ast.SliceTypeExpr (loc, elem_ty) in
     let size = Ast.SizeofExpr (loc, TypeExpr vf_ty) in
-    let own tid vs =
-      Error "Expressing ownership of a slice is not yet supported"
+    let own tid v =
+      Ok
+        (Ast.ExprCallExpr
+           ( loc,
+             TypePredExpr (loc, vf_ty, "own"),
+             [ LitPat tid; LitPat v ] ))
     in
     let full_bor_content t l =
       Error
@@ -1724,7 +1764,7 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
           size;
           own;
           shr =
-            (fun k t l ->
+            (fun _k _t _l ->
               Error
                 "Expressing the shared ownership of a slice is not yet \
                  supported");
