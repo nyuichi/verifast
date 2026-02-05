@@ -152,9 +152,13 @@ const VF_GHOST_CMD_TAG_LEN: u32 = VF_GHOST_CMD_TAG.len() as u32;
 pub fn preprocess(
     input: &str,
     read_only: bool,
+    insert_helpers: bool,
     directives: &mut Vec<Box<GhostRange>>,
     ghost_ranges: &mut Vec<Box<GhostRange>>,
 ) -> String {
+    let has_ghost_command = input.contains("const fn VeriFast_ghost_command()");
+    let has_alloc = input.contains("fn VeriFast_alloc");
+    let has_free = input.contains("fn VF_free");
     let input_starts_with_bom = input.starts_with("\u{feff}");
     let mut cs = TextIterator {
         chars: input.chars().peekable(),
@@ -203,8 +207,18 @@ pub fn preprocess(
                         ghost_ranges[last.start_ghost_range_index].start.column
                     );
                 }
-                if !read_only {
-                    output.push_str("\n\nconst fn VeriFast_ghost_command() {}\nfn VeriFast_alloc<T>() -> *mut T { VeriFast_alloc() }\nfn VF_free<T>(_ptr: *mut T) {}\n");
+                if !read_only && insert_helpers {
+                    if !has_ghost_command {
+                        output.push_str("\n\nconst fn VeriFast_ghost_command() {}\n");
+                    }
+                    if !has_alloc {
+                        output.push_str(
+                            "fn VeriFast_alloc<T>() -> *mut T { VeriFast_alloc() }\n",
+                        );
+                    }
+                    if !has_free {
+                        output.push_str("fn VF_free<T>(_ptr: *mut T) {}\n");
+                    }
                 }
                 return output;
             }

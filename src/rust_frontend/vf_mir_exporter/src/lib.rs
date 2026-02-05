@@ -98,9 +98,17 @@ pub fn run_compiler() -> i32 {
         // Todo @Nima: Find the correct sysroot by yourself. for now we get it as an argument.
         // See filesearch::get_or_default_sysroot()
 
+        let crate_root = rustc_args
+            .iter()
+            .skip(1)
+            .find(|arg| !arg.starts_with('-'))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(""));
+
         let mut callbacks = CompilerCalls {
             source_files: Box::leak(Box::new(std::sync::Mutex::new(SourceFiles::new()))),
             preprocess_mode,
+            crate_root,
         };
         // Call the Rust compiler with our callbacks.
         trace!("Calling the Rust Compiler with args: {:?}", rustc_args);
@@ -157,6 +165,7 @@ impl SourceFiles {
 struct FileLoader {
     read_only: bool,
     source_files: &'static std::sync::Mutex<SourceFiles>,
+    crate_root: std::path::PathBuf,
 }
 
 impl rustc_span::source_map::FileLoader for FileLoader {
@@ -172,10 +181,14 @@ impl rustc_span::source_map::FileLoader for FileLoader {
         if path.to_string_lossy().contains("toolchains") {
             Ok(contents)
         } else {
+            let is_crate_root = match (std::fs::canonicalize(path), std::fs::canonicalize(&self.crate_root)) {
+                (Ok(path_canon), Ok(root_canon)) => path_canon == root_canon,
+                _ => path == self.crate_root.as_path(),
+            };
             let mut directives = Vec::new();
             let mut ghost_ranges = Vec::new();
             let preprocessed_contents =
-                preprocessor::preprocess(contents.as_str(), self.read_only, &mut directives, &mut ghost_ranges);
+                preprocessor::preprocess(contents.as_str(), self.read_only, is_crate_root, &mut directives, &mut ghost_ranges);
             if self.read_only {
                 assert_eq!(preprocessed_contents, contents);
             }
@@ -198,6 +211,7 @@ impl rustc_span::source_map::FileLoader for FileLoader {
 struct CompilerCalls {
     source_files: &'static std::sync::Mutex<SourceFiles>,
     preprocess_mode: PreprocessMode,
+    crate_root: std::path::PathBuf,
 }
 
 impl rustc_driver::Callbacks for CompilerCalls {
@@ -211,6 +225,7 @@ impl rustc_driver::Callbacks for CompilerCalls {
             config.file_loader = Some(Box::from(FileLoader {
                 read_only: self.preprocess_mode == PreprocessMode::PreprocessReadOnly,
                 source_files: self.source_files,
+                crate_root: self.crate_root.clone(),
             }));
         }
 
