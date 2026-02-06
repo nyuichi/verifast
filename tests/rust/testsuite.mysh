@@ -116,6 +116,8 @@ cd safe_abstraction
   verifast float_basic.rs
   verifast const_generic.rs
   verifast const_generic_ref.rs
+  verifast foreign_type.rs
+  verifast enum_lifetime.rs
   verifast slice_own.rs
   verifast slice_share.rs
   verifast include_helper.rs

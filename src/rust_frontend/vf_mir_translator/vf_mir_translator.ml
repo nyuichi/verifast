@@ -921,41 +921,58 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
             let ty_info = { Mir.vf_ty; interp } in
             Ok ty_info)
     | EnumKind ->
-        let* targs =
+        let* gen_args =
           ListAux.try_map
-            (fun targ_cpn -> translate_generic_arg targ_cpn loc)
+            (fun arg_cpn -> translate_generic_arg arg_cpn loc)
             substs_cpn
         in
         let targs =
-          targs
-          |> List.map @@ function
-             | Mir.GenArgLifetime _ ->
-                 raise
-                   (Ast.StaticError
-                      ( loc,
-                        "Lifetime arguments are not yet supported here",
-                        None ))
-             | Mir.GenArgType arg_ty -> arg_ty.vf_ty
-             | Mir.GenArgConst _ ->
-                 raise
-                   (Ast.StaticError
-                      (loc, "Const arguments are not yet supported here", None))
+          gen_args
+          |> Util.flatmap @@ function
+             | Mir.GenArgType arg_ty -> [ arg_ty.vf_ty ]
+             | _ -> []
         in
-        let vf_ty = ConstructedTypeExpr (loc, name, targs) in
+        let lft_args =
+          gen_args
+          |> Util.flatmap @@ function
+             | Mir.GenArgLifetime name -> [ vf_ty_arg_of_region loc name ]
+             | _ -> []
+        in
+        let const_args =
+          gen_args
+          |> Util.flatmap @@ function
+             | Mir.GenArgConst ty -> [ ty ]
+             | _ -> []
+        in
+        let vf_targs = lft_args @ targs @ const_args in
+        let vf_ty = ConstructedTypeExpr (loc, name, vf_targs) in
         let sz_expr = SizeofExpr (loc, TypeExpr vf_ty) in
         let own tid v =
           Ok
             (ExprCallExpr
                (loc, TypePredExpr (loc, vf_ty, "own"), [ LitPat tid; LitPat v ]))
         in
-        let shr lft tid l =
-          Error
-            "Expressing shared ownership of an enum value is not yet supported"
-        in
         let full_bor_content tid l =
-          Error
-            "Expressing the full borrow content of an enum value is not yet \
-             supported"
+          let enum_var = "enum_val" in
+          let enum_pat = VarPat (loc, enum_var) in
+          let enum_expr = Var (loc, enum_var) in
+          let pts = PointsTo (loc, l, RegularPointsTo, enum_pat) in
+          let* own_asn = own tid enum_expr in
+          Ok (Sep (loc, pts, own_asn))
+        in
+        let shr k tid l =
+          let* fbc = full_bor_content tid l in
+          Ok
+            (CoefAsn
+               ( loc,
+                 DummyPat,
+                 CallExpr
+                   ( loc,
+                     "frac_borrow",
+                     [],
+                     [],
+                     [ LitPat k; LitPat fbc ],
+                     Static ) ))
         in
         (* Todo: Nested structs *)
         let points_to tid l vid_op =
@@ -1121,6 +1138,72 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
           { size; own; shr; full_bor_content; points_to; pointee_fbc = None };
     }
 
+  and foreign_ty_info loc =
+    let open Ast in
+    let vf_ty = ManifestTypeExpr (loc, UnionType "std_empty_") in
+    let size = SizeofExpr (loc, TypeExpr vf_ty) in
+    let own _ _ = Ok (True loc) in
+    let full_bor_content _ l =
+      Ok (PointsTo (loc, l, RegularPointsTo, DummyVarPat))
+    in
+    let shr k t l =
+      let* fbc = full_bor_content t l in
+      Ok
+        (CoefAsn
+           ( loc,
+             DummyPat,
+             CallExpr
+               ( loc,
+                 "frac_borrow",
+                 [],
+                 [],
+                 [ LitPat k; LitPat fbc ],
+                 Static ) ))
+    in
+    let points_to tid l vid_op =
+      let* pat = RustBelt.Aux.vid_op_to_var_pat vid_op loc in
+      Ok (PointsTo (loc, l, RegularPointsTo, pat))
+    in
+    {
+      Mir.vf_ty;
+      interp =
+        RustBelt.
+          { size; own; shr; full_bor_content; points_to; pointee_fbc = None };
+    }
+
+  and dynamic_ty_info loc =
+    let open Ast in
+    let vf_ty = ManifestTypeExpr (loc, UnionType "std_empty_") in
+    let size = SizeofExpr (loc, TypeExpr vf_ty) in
+    let own _ _ = Ok (True loc) in
+    let full_bor_content _ l =
+      Ok (PointsTo (loc, l, RegularPointsTo, DummyVarPat))
+    in
+    let shr k t l =
+      let* fbc = full_bor_content t l in
+      Ok
+        (CoefAsn
+           ( loc,
+             DummyPat,
+             CallExpr
+               ( loc,
+                 "frac_borrow",
+                 [],
+                 [],
+                 [ LitPat k; LitPat fbc ],
+                 Static ) ))
+    in
+    let points_to tid l vid_op =
+      let* pat = RustBelt.Aux.vid_op_to_var_pat vid_op loc in
+      Ok (PointsTo (loc, l, RegularPointsTo, pat))
+    in
+    {
+      Mir.vf_ty;
+      interp =
+        RustBelt.
+          { size; own; shr; full_bor_content; points_to; pointee_fbc = None };
+    }
+
   and translate_alias_ty ({kind; def_id; args={kind=Type self_ty}::args}: D.ty_kind_alias_ty) loc =
     let open Ast in
     let* self_ty = translate_ty self_ty loc in
@@ -1137,23 +1220,23 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
           | Mir.GenArgLifetime name -> [ vf_ty_arg_of_region loc name ]
           | _ -> []
     in
-    let vf_targs = lft_args @ targs in
+    let const_args =
+      gen_args
+      |> Util.flatmap @@ function
+          | Mir.GenArgConst ty -> [ ty ]
+          | _ -> []
+    in
+    let vf_targs = lft_args @ targs @ const_args in
     let def_id_separator = String.rindex def_id ':' in
     let trait_name = String.sub def_id 0 (def_id_separator - 1) in
     let trait_name = canonicalize_item_name trait_name in
     let alias_name = String.sub def_id (def_id_separator + 1) (String.length def_id - def_id_separator - 1) in
-    let vf_ty = ProjectionTypeExpr (loc, self_ty.vf_ty, trait_name, vf_targs, alias_name) in
+    let alias_full_name = trait_name ^ "::" ^ alias_name in
+    let vf_ty = ManifestTypeExpr (loc, AbstractType alias_full_name) in
     let size = SizeofExpr (loc, TypeExpr vf_ty) in
-    let own tid vs =
-      Error "Expressing ownership of alias types is not yet supported"
-    in
-    let shr lft tid l =
-      Error "Expressing shared ownership of alias types is not yet supported"
-    in
-    let full_bor_content tid l =
-      Error
-        "Expressing the full borrow content of alias types is not yet supported"
-    in
+    let own _ _ = Ok (True loc) in
+    let shr _ _ _ = Ok (True loc) in
+    let full_bor_content _ _ = Ok (True loc) in
     let points_to tid l vid_op =
       let* pat = RustBelt.Aux.vid_op_to_var_pat vid_op loc in
       Ok (PointsTo (loc, l, RegularPointsTo, pat))
@@ -1172,27 +1255,72 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
     let lft_expr = Rust_parser.expr_of_lft_param_expr loc lft in
     let vf_ty = RustRefTypeExpr (loc, lft, (match mut with Mir.Not -> Shared | Mir.Mut -> Mutable), ManifestTypeExpr (loc, Str)) in
     let size = SizeofExpr (loc, TypeExpr vf_ty) in
+    let share_expr tid v =
+      ExprCallExpr
+        ( loc,
+          TypePredExpr (loc, ManifestTypeExpr (loc, Str), "share"),
+          [ LitPat lft_expr; LitPat tid; LitPat v ] )
+    in
     let own tid v =
+      Ok
+        (CoefAsn
+           ( loc,
+             DummyPat,
+             share_expr tid v ))
+    in
+    let full_bor_content tid l =
+      let ref_var = "str_ref" in
+      let ref_pat = VarPat (loc, ref_var) in
+      let ref_expr = Var (loc, ref_var) in
+      let pts = PointsTo (loc, l, RegularPointsTo, ref_pat) in
+      Ok (Sep (loc, pts, share_expr tid ref_expr))
+    in
+    let shr k tid l =
+      let* fbc = full_bor_content tid l in
+      Ok
+        (CoefAsn
+           ( loc,
+             DummyPat,
+             CallExpr
+               ( loc,
+                 "frac_borrow",
+                 [],
+                 [],
+                 [ LitPat k; LitPat fbc ],
+                 Static ) ))
+    in
+    let points_to tid l vid_op =
+      let* pat = RustBelt.Aux.vid_op_to_var_pat vid_op loc in
+      Ok (PointsTo (loc, l, RegularPointsTo, pat))
+    in
+    {
+      Mir.vf_ty;
+      interp =
+        RustBelt.
+          { size; own; shr; full_bor_content; points_to; pointee_fbc = None };
+    }
+
+  and str_ty_info loc =
+    let open Ast in
+    let vf_ty = ManifestTypeExpr (loc, Str) in
+    let size = SizeofExpr (loc, TypeExpr vf_ty) in
+    let own _ _ = Ok (True loc) in
+    let shr k t l =
       Ok
         (CoefAsn
            ( loc,
              DummyPat,
              ExprCallExpr
                ( loc,
-                 TypePredExpr (loc, ManifestTypeExpr (loc, Str), "share"),
-                 [ LitPat lft_expr; LitPat tid; LitPat v ] ) ))
+                 TypePredExpr (loc, vf_ty, "share"),
+                 [ LitPat k; LitPat t; LitPat l ] ) ))
     in
-    let shr lft tid l =
-      Error "Expressing shared ownership of &str values is not yet supported"
-    in
-    let full_bor_content tid l =
-      Error
-        "Expressing the full borrow content of &str values is not yet supported"
+    let full_bor_content _ _ =
+      Error "Expressing the full borrow content of str values is not yet supported"
     in
     let points_to tid l vid_op =
-      Error
-        "Expressing a points-to assertion for a &str object is not yet \
-         supported"
+      let* pat = RustBelt.Aux.vid_op_to_var_pat vid_op loc in
+      Ok (PointsTo (loc, l, RegularPointsTo, pat))
     in
     {
       Mir.vf_ty;
@@ -1235,20 +1363,13 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
       PtrTypeExpr (loc, SliceTypeExpr (loc, elem_ty_info.Mir.vf_ty))
     in
     let size = SizeofExpr (loc, TypeExpr vf_ty) in
-    let own tid vs =
-      Error "Expressing ownership of *const/mut [_] values is not yet supported"
-    in
-    let shr lft tid l =
-      Error "Expressing shared ownership of *const/mut [_] values is not yet supported"
-    in
-    let full_bor_content tid l =
-      Error
-        "Expressing the full borrow content of *const/mut [_] values is not yet supported"
-    in
+    let own tid vs = Ok (True loc) in
+    let fbc_name = "raw_ptr_full_borrow_content" in
+    let shr lft tid l = simple_shr loc fbc_name lft tid l in
+    let full_bor_content = RustBelt.simple_fbc loc fbc_name in
     let points_to tid l vid_op =
-      Error
-        "Expressing a points-to assertion for a *const/mut [_] object is not yet \
-         supported"
+      let* pat = RustBelt.Aux.vid_op_to_var_pat vid_op loc in
+      Ok (PointsTo (loc, l, RegularPointsTo, pat))
     in
     {
       Mir.vf_ty;
@@ -1560,15 +1681,28 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
               Ok (own, shr, full_bor_content, points_to, Some pointee_fbc)
           | Mir.Not ->
               let own tid l = ptee_shr lft tid l in
-              let shr lft tid l =
-                Error
-                  "Calling a function with a shared reference type as a \
-                   generic type argument is not yet supported"
-              in
               let full_bor_content tid l =
-                Error
-                  "Expressing the full borrow content of a shared reference \
-                   type is not yet supported"
+                let ref_var = "ref_val" in
+                let ref_pat = VarPat (loc, ref_var) in
+                let ref_expr = Var (loc, ref_var) in
+                let pts = PointsTo (loc, l, RegularPointsTo, ref_pat) in
+                match ptee_shr lft tid ref_expr with
+                | Ok shr_asn -> Ok (Sep (loc, pts, shr_asn))
+                | Error _ -> Ok pts
+              in
+              let shr k tid l =
+                let* fbc = full_bor_content tid l in
+                Ok
+                  (CoefAsn
+                     ( loc,
+                       DummyPat,
+                       CallExpr
+                         ( loc,
+                           "frac_borrow",
+                           [],
+                           [],
+                           [ LitPat k; LitPat fbc ],
+                           Static ) ))
               in
               let points_to tid l vid_op =
                 let* pat = RustBelt.Aux.vid_op_to_var_pat vid_op loc in
@@ -1879,12 +2013,12 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
     | Char -> Ok (char_ty_info loc)
     | Float float_ty -> translate_float_ty float_ty loc
     | Adt adt_ty_cpn -> translate_adt_ty adt_ty_cpn loc
-    | Foreign -> Ast.static_error loc "Foreign types are not yet supported" None
+    | Foreign -> Ok (foreign_ty_info loc)
     | RawPtr raw_ptr_ty_cpn -> translate_raw_ptr_ty raw_ptr_ty_cpn loc
     | Ref ref_ty_cpn -> translate_ref_ty ref_ty_cpn loc
     | FnDef fn_def_ty_cpn -> translate_fn_def_ty fn_def_ty_cpn loc
     | FnPtr fn_ptr_ty_cpn -> translate_fn_ptr_ty fn_ptr_ty_cpn loc
-    | Dynamic _ -> Ast.static_error loc "Dynamic types are not yet supported" None
+    | Dynamic _ -> Ok (dynamic_ty_info loc)
     | Closure _ ->
         Ast.static_error loc "Closure types are not yet supported" None
         (* CAVEAT: Once we allow closure types to appear as function call generic arguments, we must also verify closure bodies. *)
@@ -1905,7 +2039,7 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
         Ast.static_error loc "Placeholder types are not yet supported" None
     | Infer -> Ast.static_error loc "Infer types are not yet supported" None
     | Error -> Ast.static_error loc "Error types are not yet supported" None
-    | Str -> Ast.static_error loc "Str types are not yet supported" None
+    | Str -> Ok (str_ty_info loc)
     | Array array_ty_cpn -> translate_array_ty array_ty_cpn loc
     | Pattern -> Ast.static_error loc "Pattern types are not yet supported" None
     | Slice ty_cpn -> translate_slice_ty ty_cpn loc
@@ -3357,15 +3491,27 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
             |> List.map D.decode_uint128
             |> ListAux.try_map (fun data -> translate_scalar_int {data; size} discriminant_ty.vf_ty loc)
           in
-          Ok
-            (`TrRvalueExpr
-              (Ast.CallExpr
-                 ( loc,
-                   "#inductive_discriminant",
-                   [discriminant_ty.vf_ty],
-                   [],
-                   List.map (fun v -> Ast.LitPat v) (place_expr :: discriminant_values),
-                   Static )))
+          if discriminant_values = [] then
+            let zero_uint128 : D.uint128 =
+              { h = Stdint.Uint64.zero; l = Stdint.Uint64.zero }
+            in
+            let* zero =
+              translate_scalar_int
+                { data = zero_uint128; size }
+                discriminant_ty.vf_ty
+                loc
+            in
+            Ok (`TrRvalueExpr zero)
+          else
+            Ok
+              (`TrRvalueExpr
+                (Ast.CallExpr
+                   ( loc,
+                     "#inductive_discriminant",
+                     [discriminant_ty.vf_ty],
+                     [],
+                     List.map (fun v -> Ast.LitPat v) (place_expr :: discriminant_values),
+                     Static )))
       | ShallowInitBox ->
           Ast.static_error loc
             "Shallow initialization of a Box is not yet supported" None

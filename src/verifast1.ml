@@ -6141,6 +6141,11 @@ module VerifyProgram1(VerifyProgramArgs: VERIFY_PROGRAM_ARGS) = struct
         (LitPat w, [])
       in
       begin match e with
+      | Sep _ | PointsTo _ | EmpAsn _ | CoefAsn _ | ExprAsn _ ->
+        (* Assertions can appear as literal patterns in ghost contexts (e.g., frac_borrow). *)
+        (LitPat e, [])
+      | _ ->
+      begin match e with
         CallExpr (l, g, [], [], pats, Static) ->
         begin match resolve Ghost (pn,ilist) l g purefuncmap with
           Some (g_resolved, (_, _, rt, _, _)) ->
@@ -6172,6 +6177,7 @@ module VerifyProgram1(VerifyProgramArgs: VERIFY_PROGRAM_ARGS) = struct
         end
       | _ ->
         fallback()
+      end
       end
     | VarPat (l, x) ->
       if List.mem_assoc x tenv then static_error l ("Pattern variable '" ^ x ^ "' hides existing local variable '" ^ x ^ "'.") None;
@@ -6421,6 +6427,8 @@ module VerifyProgram1(VerifyProgramArgs: VERIFY_PROGRAM_ARGS) = struct
   | UnionType un ->
     let _, _, s = List.assoc un unionmap in
     s
+  | AbstractType name ->
+    mk_typeid_term name
   | FuncType ftn ->
     begin match try_assoc ftn functypedeclmap1 with
       Some (l, gh, tparams, rt, ftxmap, xmap, pn, ilist, pre, post, terminates, predfammaps, ft_typeid) ->
