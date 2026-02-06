@@ -1141,12 +1141,10 @@ mod vf_mir_builder {
                 Self::encode_field_def(tcx, enc_ctx, field, field_cpn);
             });
             match vdef.discr {
-                ty::VariantDiscr::Explicit(_) => todo!(),
-                ty::VariantDiscr::Relative(discr) => {
-                    if discr != variant_index {
-                        todo!()
-                    }
-                }
+                // Discriminants are encoded via `adt_def.discriminants(tcx)` when needed.
+                // Ignore explicit/relative values here to avoid failing on enums with custom discriminants.
+                ty::VariantDiscr::Explicit(_) => {}
+                ty::VariantDiscr::Relative(_) => {}
             }
         }
 
@@ -2247,6 +2245,32 @@ mod vf_mir_builder {
             }
         }
 
+        fn integer_type_from_ty(ty: ty::Ty<'tcx>) -> rustc_abi::IntegerType {
+            match ty.kind() {
+                ty::TyKind::Int(int_ty) => match int_ty {
+                    ty::IntTy::Isize => rustc_abi::IntegerType::Pointer(true),
+                    ty::IntTy::I8 => rustc_abi::IntegerType::Fixed(rustc_abi::Integer::I8, true),
+                    ty::IntTy::I16 => rustc_abi::IntegerType::Fixed(rustc_abi::Integer::I16, true),
+                    ty::IntTy::I32 => rustc_abi::IntegerType::Fixed(rustc_abi::Integer::I32, true),
+                    ty::IntTy::I64 => rustc_abi::IntegerType::Fixed(rustc_abi::Integer::I64, true),
+                    ty::IntTy::I128 => rustc_abi::IntegerType::Fixed(rustc_abi::Integer::I128, true),
+                },
+                ty::TyKind::Uint(uint_ty) => match uint_ty {
+                    ty::UintTy::Usize => rustc_abi::IntegerType::Pointer(false),
+                    ty::UintTy::U8 => rustc_abi::IntegerType::Fixed(rustc_abi::Integer::I8, false),
+                    ty::UintTy::U16 => rustc_abi::IntegerType::Fixed(rustc_abi::Integer::I16, false),
+                    ty::UintTy::U32 => rustc_abi::IntegerType::Fixed(rustc_abi::Integer::I32, false),
+                    ty::UintTy::U64 => rustc_abi::IntegerType::Fixed(rustc_abi::Integer::I64, false),
+                    ty::UintTy::U128 => rustc_abi::IntegerType::Fixed(rustc_abi::Integer::I128, false),
+                },
+                ty::TyKind::Bool => rustc_abi::IntegerType::Fixed(rustc_abi::Integer::I8, false),
+                _ => {
+                    debug!("Unexpected discriminant type: {:?}", ty);
+                    rustc_abi::IntegerType::Fixed(rustc_abi::Integer::I8, false)
+                }
+            }
+        }
+
         fn encode_rvalue(
             tcx: TyCtxt<'tcx>,
             enc_ctx: &mut EncCtx<'tcx, 'a>,
@@ -2355,13 +2379,29 @@ mod vf_mir_builder {
 
                     let body = enc_ctx.body();
                     let ty = place.ty(body, tcx);
-                    let adt_def = ty.ty.ty_adt_def().unwrap();
-                    let variants_count = adt_def.variants().len();
+                    if let Some(adt_def) = ty.ty.ty_adt_def() {
+                        let variants_count = adt_def.variants().len();
 
-                    Self::encode_integer_type(adt_def.repr().discr_type(), discriminant_data_cpn.reborrow().init_discriminant_ty());
-                    let mut discr_values_cpn = discriminant_data_cpn.reborrow().init_discriminant_values(variants_count);
-                    for (i, discr) in adt_def.discriminants(tcx) {
-                        capnp_utils::encode_u_int128(discr.val, discr_values_cpn.reborrow().get(i.into()));
+                        Self::encode_integer_type(
+                            adt_def.repr().discr_type(),
+                            discriminant_data_cpn.reborrow().init_discriminant_ty(),
+                        );
+                        let mut discr_values_cpn =
+                            discriminant_data_cpn.reborrow().init_discriminant_values(variants_count);
+                        for (i, discr) in adt_def.discriminants(tcx) {
+                            capnp_utils::encode_u_int128(
+                                discr.val,
+                                discr_values_cpn.reborrow().get(i.into()),
+                            );
+                        }
+                    } else {
+                        let discr_ty = ty.ty.discriminant_ty(tcx);
+                        let integer_ty = Self::integer_type_from_ty(discr_ty);
+                        Self::encode_integer_type(
+                            integer_ty,
+                            discriminant_data_cpn.reborrow().init_discriminant_ty(),
+                        );
+                        discriminant_data_cpn.reborrow().init_discriminant_values(0);
                     }
                     Self::encode_place(enc_ctx, place, discriminant_data_cpn.init_place());
                 }
