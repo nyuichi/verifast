@@ -52,7 +52,7 @@ use rustc_middle::ty::{self, TyCtxt};
 use rustc_session::Session;
 use rustc_span::Span;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::thread_local;
 use tracing::{debug, error, info, trace, Level};
 
@@ -257,15 +257,20 @@ impl rustc_driver::Callbacks for CompilerCalls {
         tcx.hir_visit_all_item_likes_in_crate(&mut visitor);
 
         let mut bodies = Vec::new();
+        let mut seen_bodies = HashSet::new();
         // Trigger borrow checking of all bodies.
         for (def_id, span) in visitor.bodies {
+            if !seen_bodies.insert(def_id) {
+                trace!("Skipping duplicate body for {}", tcx.def_path_str(def_id));
+                continue;
+            }
             //let _ = tcx.optimized_mir(def_id);
             let body = tcx.mir_drops_elaborated_and_const_checked(def_id);
             if body.is_stolen() {
                 trace!("Skipping body for {}; it's already been stolen", tcx.def_path_str(def_id));
             } else {
                 bodies.push((
-                    body.steal(),
+                    body.borrow().clone(),
                     span,
                 ))
             }
