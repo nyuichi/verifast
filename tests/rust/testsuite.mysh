@@ -114,6 +114,8 @@ cd safe_abstraction
   verifast str.rs
   verifast explicit_discriminant.rs
   verifast float_basic.rs
+  verifast const_generic.rs
+  verifast const_generic_ref.rs
   verifast slice_own.rs
   verifast slice_share.rs
   verifast include_helper.rs

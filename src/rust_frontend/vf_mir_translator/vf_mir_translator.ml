@@ -829,7 +829,12 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
     match kind with
     | StructKind | UnionKind -> (
         match def_path, substs_cpn with
-        | ("std::cell::UnsafeCell" | "std::mem::ManuallyDrop"), [ arg_cpn ] ->
+        | ( ("std::cell::UnsafeCell" | "core::cell::UnsafeCell" | "cell::UnsafeCell"
+            | "std::mem::ManuallyDrop" | "core::mem::ManuallyDrop"
+            | "mem::ManuallyDrop" | "std::mem::manually_drop::ManuallyDrop"
+            | "core::mem::manually_drop::ManuallyDrop"
+            | "mem::manually_drop::ManuallyDrop"),
+            [ arg_cpn ] ) ->
             let* (Mir.GenArgType arg_ty) = translate_generic_arg arg_cpn loc in
             Ok arg_ty
         | _ ->
@@ -850,7 +855,13 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
                  | Mir.GenArgLifetime name -> [ vf_ty_arg_of_region loc name ]
                  | _ -> []
             in
-            let vf_targs = lft_args @ targs in
+            let const_args =
+              gen_args
+              |> Util.flatmap @@ function
+                 | Mir.GenArgConst ty -> [ ty ]
+                 | _ -> []
+            in
+            let vf_targs = lft_args @ targs @ const_args in
             let vf_ty = StructTypeExpr (loc, Some name, None, [], vf_targs) in
             let sz_expr = SizeofExpr (loc, TypeExpr vf_ty) in
             let own tid v =
@@ -1248,20 +1259,50 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
 
   and slice_ref_ty_info loc lft mut elem_ty_info =
     let open Ast in
-    let mut = match mut with Mir.Not -> Shared | Mir.Mut -> Mutable in
+    let mut_kind = match mut with Mir.Not -> Shared | Mir.Mut -> Mutable in
+    let slice_ty = SliceTypeExpr (loc, elem_ty_info.Mir.vf_ty) in
     let vf_ty =
-      RustRefTypeExpr (loc, lft, mut, SliceTypeExpr (loc, elem_ty_info.Mir.vf_ty))
+      RustRefTypeExpr (loc, lft, mut_kind, slice_ty)
     in
     let size = SizeofExpr (loc, TypeExpr vf_ty) in
-    let own tid vs =
-      Error "Expressing ownership of &[_] values is not yet supported"
+    let lft_expr = Rust_parser.expr_of_lft_param_expr loc lft in
+    let share_expr tid v =
+      ExprCallExpr
+        ( loc,
+          TypePredExpr (loc, slice_ty, "share"),
+          [ LitPat lft_expr; LitPat tid; LitPat v ] )
     in
-    let shr lft tid l =
-      Error "Expressing shared ownership of &[_] values is not yet supported"
+    let own tid v =
+      match mut with
+      | Mir.Not ->
+          Ok
+            (CoefAsn
+               ( loc,
+                 DummyPat,
+                 share_expr tid v ))
+      | Mir.Mut ->
+          Ok (True loc)
     in
     let full_bor_content tid l =
-      Error
-        "Expressing the full borrow content of &[_] values is not yet supported"
+      let ref_var = "slice_ref" in
+      let ref_pat = VarPat (loc, ref_var) in
+      let ref_expr = Var (loc, ref_var) in
+      let pts = PointsTo (loc, l, RegularPointsTo, ref_pat) in
+      Ok (Sep (loc, pts, share_expr tid ref_expr))
+    in
+    let shr k tid l =
+      let* fbc = full_bor_content tid l in
+      Ok
+        (CoefAsn
+           ( loc,
+             DummyPat,
+             CallExpr
+               ( loc,
+                 "frac_borrow",
+                 [],
+                 [],
+                 [ LitPat k; LitPat fbc ],
+                 Static ) ))
     in
     let points_to tid l vid_op =
       let* pat = RustBelt.Aux.vid_op_to_var_pat vid_op loc in
@@ -1287,6 +1328,10 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
     | Const ty_const_cpn ->
       let ty_expr =
         match ty_const_cpn.kind with
+        | Param param_cpn ->
+            Ast.IdentTypeExpr (loc, None, param_cpn.name)
+        | Infer | Bound | Placeholder | Unevaluated | Error | Expr ->
+            Ast.InferredTypeExpr loc
         | Value {ty; val_tree} -> 
           begin match val_tree with
           | Leaf {data; size} ->
@@ -1300,8 +1345,6 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
           | _ -> 
               failwith "Unsupported constant value tree"
           end
-        | _ -> 
-            failwith "Unsupported constant kind"
       in
       Ok (Mir.GenArgConst ty_expr)
 
@@ -1312,7 +1355,7 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
     match get (kind_get gen_param_cpn) with
     | Type -> `Type name
     | Lifetime -> `Lifetime name
-    | Const -> failwith "Const generic parameters are not yet supported"
+    | Const -> `Type name
 
   and decode_generic_arg (gen_arg_cpn : D.generic_arg) =
     let kind_cpn = gen_arg_cpn.kind in
@@ -1480,25 +1523,22 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
                        [ LitPat lft; LitPat ptee_fbc ],
                        Static ))
               in
-              let shr lft tid l =
-                Error
-                  "Calling a function with a mutable reference type as a \
-                   generic type argument is not yet supported"
-              in
               let full_bor_content tid l =
-                (* This will need to add a definition for each mut reference type in the program because the body of the predicate will need to mention
-                   [[&mut T]].own which depends on T. Another solution is to make VeriFast support Higher order predicates with non-predicate arguments *)
-                Error
-                  "Expressing the full borrow content of a mutable reference \
-                   type is not yet supported"
-                (* CallExpr
-                   ( loc,
-                     "mut_ref_full_borrow_content",
-                     (*type arguments*) [],
-                     (*indices*) [],
-                     (*arguments*)
-                     [ LitPat tid; LitPat l ],
-                     Static ) *)
+                Ok (PointsTo (loc, l, RegularPointsTo, DummyVarPat))
+              in
+              let shr k tid l =
+                let* fbc = full_bor_content tid l in
+                Ok
+                  (CoefAsn
+                     ( loc,
+                       DummyPat,
+                       CallExpr
+                         ( loc,
+                           "frac_borrow",
+                           [],
+                           [],
+                           [ LitPat k; LitPat fbc ],
+                           Static ) ))
               in
               let points_to tid l vid_op =
                 let* pat = RustBelt.Aux.vid_op_to_var_pat vid_op loc in
@@ -1681,7 +1721,7 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
   and translate_ty_const_kind (ck_cpn : D.const_kind) (loc : Ast.loc) =
     let open VfMirRd.ConstKind in
     match ck_cpn with
-    | Param _ -> Ast.static_error loc "Todo: ConstKind::Param" None
+    | Param param_cpn -> Ok (Ast.Var (loc, param_cpn.name))
     | Infer -> Ast.static_error loc "Todo: ConstKind::Infer" None
     | Bound -> Ast.static_error loc "Todo: ConstKind::Bound" None
     | Placeholder -> Ast.static_error loc "Todo: ConstKind::Placeholder" None
@@ -3255,12 +3295,12 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
               let fn_name = fn_def_ty_cpn.id.name in
               Ok (`TrRvalueExpr (Ast.CastExpr (loc, ty, Var (loc, fn_name)))))
       | BinaryOp bin_op_data_cpn ->
-          let* operator, operandl, operandr =
-            translate_binary_operation bin_op_data_cpn loc
-          in
-          let* operandl = tr_operand operandl in
-          let* operandr = tr_operand operandr in
-          Ok (`TrRvalueBinaryOp (operator, operandl, operandr))
+      let* operator, operandl, operandr =
+        translate_binary_operation bin_op_data_cpn loc
+      in
+      let* operandl = tr_operand operandl in
+      let* operandr = tr_operand operandr in
+      Ok (`TrRvalueBinaryOp (operator, operandl, operandr))
       | NullaryOp null_op_cpn ->
           let open VfMirRd.NullOp in
           let runtime_checks_cpn = runtime_checks_get null_op_cpn in
@@ -4768,9 +4808,9 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
         |> ListAux.try_map (fun genarg_cpn ->
                let* arg = translate_generic_arg genarg_cpn loc in
                match arg with
-               | Mir.GenArgLifetime _ -> assert false
+               | Mir.GenArgLifetime _ -> Ok (Ast.InferredTypeExpr loc)
                | Mir.GenArgType ty -> Ok ty.vf_ty
-               | Mir.GenArgConst _ -> assert false)
+               | Mir.GenArgConst ty -> Ok ty)
       in
       Ok (projection_term_cpn.def_id, trait_args)
     in
@@ -6116,12 +6156,7 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
            with
            | Lifetime -> Ok (`Lifetime name)
            | Type -> Ok (`Type name)
-           | Const ->
-               raise
-                 (Ast.StaticError
-                    ( l,
-                      "Structs with const parameters are not yet supported",
-                      None ))
+           | Const -> Ok (`Type name)
       in
       let tparams =
         Util.flatmap (function `Type x -> [ x ] | _ -> []) generics
