@@ -656,6 +656,46 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
     in
     Ok ty_info
 
+  let translate_float_ty (float_ty_cpn : D.float_ty) (loc : Ast.loc) =
+    let open Ast in
+    let vf_ty =
+      match float_ty_cpn with
+      | D.F16 -> ManifestTypeExpr (loc, Float)
+      | D.F32 -> ManifestTypeExpr (loc, Float)
+      | D.F64 -> ManifestTypeExpr (loc, Double)
+      | D.F128 -> ManifestTypeExpr (loc, LongDouble)
+    in
+    let size = SizeofExpr (loc, TypeExpr vf_ty) in
+    let own _ _ = Ok (True loc) in
+    let full_bor_content _ l =
+      Ok (PointsTo (loc, l, RegularPointsTo, DummyVarPat))
+    in
+    let shr k t l =
+      let* fbc = full_bor_content t l in
+      Ok
+        (CoefAsn
+           ( loc,
+             DummyPat,
+             CallExpr
+               ( loc,
+                 "frac_borrow",
+                 [],
+                 [],
+                 [ LitPat k; LitPat fbc ],
+                 Static ) ))
+    in
+    let points_to tid l vid_op =
+      let* pat = RustBelt.Aux.vid_op_to_var_pat vid_op loc in
+      Ok (PointsTo (loc, l, RegularPointsTo, pat))
+    in
+    Ok
+      {
+        Mir.vf_ty;
+        interp =
+          RustBelt.
+            { size; own; shr; full_bor_content; points_to; pointee_fbc = None };
+      }
+
   let translate_u_int_ty (u_int_ty_cpn : D.uint_ty) (loc : Ast.loc) =
     let open Ast in
     let sz_rank_name ui =
@@ -1797,8 +1837,7 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
     | Int int_ty_cpn -> translate_int_ty int_ty_cpn loc
     | UInt u_int_ty_cpn -> translate_u_int_ty u_int_ty_cpn loc
     | Char -> Ok (char_ty_info loc)
-    | Float float_ty ->
-        Ast.static_error loc "Floating point types are not yet supported" None
+    | Float float_ty -> translate_float_ty float_ty loc
     | Adt adt_ty_cpn -> translate_adt_ty adt_ty_cpn loc
     | Foreign -> Ast.static_error loc "Foreign types are not yet supported" None
     | RawPtr raw_ptr_ty_cpn -> translate_raw_ptr_ty raw_ptr_ty_cpn loc

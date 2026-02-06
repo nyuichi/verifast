@@ -113,6 +113,7 @@ cd safe_abstraction
   verifast -ignore_unwind_paths -ignore_ref_creation -allow_assume arc.rs
   verifast str.rs
   verifast explicit_discriminant.rs
+  verifast float_basic.rs
   verifast slice_own.rs
   verifast slice_share.rs
   verifast include_helper.rs
