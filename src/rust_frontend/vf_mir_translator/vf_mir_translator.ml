@@ -6274,7 +6274,8 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
     let open AdtDefRd in
     let id_cpn = id_get adt_def_cpn in
     let def_path = translate_adt_def_id @@ D.decode_adt_def_id id_cpn in
-    if TrName.is_from_std_lib def_path then Ok None
+    let is_local = is_local_get adt_def_cpn in
+    if (not is_local) && TrName.is_from_std_lib def_path then Ok None
     else
       let name = TrName.translate_def_path def_path in
       let* generics =
@@ -6340,7 +6341,6 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
       in
       let vis_cpn = vis_get adt_def_cpn in
       let* vis = translate_visibility @@ D.decode_visibility vis_cpn in
-      let is_local = is_local_get adt_def_cpn in
       let kind_cpn = kind_get adt_def_cpn in
       let* kind, fds, fds_no_zst, def, aux_decls =
         match AdtKindRd.get kind_cpn with
@@ -6387,7 +6387,33 @@ module Make (Args : VF_MIR_TRANSLATOR_ARGS) = struct
             in
             let decl = Ast.Inductive (def_loc, name, vf_tparams, ctors) in
             Ok (Mir.Enum, [], [], decl, Rust_parser.own_pred_decls_for_enum def_loc name ctors vf_tparams)
-        | UnionKind -> failwith "Todo: AdtDef::Union"
+        | UnionKind ->
+            let [ variant_def ] = variants in
+            let fds = variant_def.fields in
+            let [ variant_def_no_zst ] = variants_no_zst in
+            let fds_no_zst = variant_def_no_zst.fields in
+            let field_defs_no_zst = List.map translate_to_vf_field_def fds_no_zst in
+            let struct_decl =
+              Ast.Struct
+                ( def_loc,
+                  name,
+                  vf_tparams,
+                  Left
+                    ( (*base_spec list*) [],
+                      (*field list*) field_defs_no_zst,
+                      (*instance_pred_decl list*) [],
+                      (*is polymorphic*) false ),
+                  (*struct_attr list*)
+                  if is_repr_c_get adt_def_cpn then [ ReprC ] else [] )
+            in
+            let struct_typedef_aux =
+              Ast.TypedefDecl
+                ( def_loc,
+                  StructTypeExpr (def_loc, Some name, None, [], tparams_targs),
+                  name,
+                  lft_params @ tparams )
+            in
+            Ok (Mir.Union, fds, fds_no_zst, struct_decl, [struct_typedef_aux])
         | Undefined _ -> Error (`TrAdtDef "Unknown ADT kind")
       in
       let user_provided_type_pred_defs_for p =

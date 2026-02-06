@@ -3019,6 +3019,7 @@ module VerifyProgram1(VerifyProgramArgs: VERIFY_PROGRAM_ARGS) = struct
             | PureFuncType (t1, t2) ->
               check_type true t1; check_type negative t2
             | StructType (_, _) when dialect = Some Rust -> () (* We don't support ghost fields in Rust structs, so these cannot be recursive or contain 'any' or predicate values *)
+            | InlineFuncType _ when dialect = Some Rust -> () (* Rust function pointer types are real and may appear in enum fields. *)
             | ProjectionType (_, _, _, _) -> ()  (* We don't support ghost fields in Rust structs, so Rust types cannot be recursive or contain 'any' or predicate values *)
             | t -> static_error l (Printf.sprintf "Type '%s' is not supported as an inductive constructor parameter type." (string_of_type t)) None
           in
@@ -3049,7 +3050,9 @@ module VerifyProgram1(VerifyProgramArgs: VERIFY_PROGRAM_ARGS) = struct
             let rec type_is_inhabited tp =
               match tp with
                 Bool | Int (_, _) | RustChar | RealType | Float | Double | LongDouble
-              | PtrType _ | RustRefType _ | ObjType _ | ArrayType _ | BoxIdType | HandleIdType | AnyType | AbstractType _ | Str | Slice _ -> true
+              | PtrType _ | RustRefType _ | ObjType _ | ArrayType _ | StaticArrayType _
+              | BoxIdType | HandleIdType | AnyType | AbstractType _ | UnionType _
+              | FuncType _ | InlineFuncType _ | ProjectionType _ | Str | Slice _ -> true
               | GhostTypeParam _ -> true  (* Should be checked at instantiation site. *)
               | PredType (tps, pts, _, _) -> true
               | PureFuncType (t1, t2) -> type_is_inhabited t2
@@ -3094,7 +3097,9 @@ module VerifyProgram1(VerifyProgramArgs: VERIFY_PROGRAM_ARGS) = struct
               Bool -> Some []
             | GhostTypeParam x -> Some [x]
             | Int (_, _) | RustChar | RealType | Float | Double | LongDouble
-            | PtrType _ | RustRefType _ | PredType (_, _, _, _) | ObjType _ | ArrayType _ | BoxIdType | HandleIdType | AnyType | AbstractType _ | Str | Slice _ -> None
+            | PtrType _ | RustRefType _ | PredType (_, _, _, _) | ObjType _ | ArrayType _ | StaticArrayType _
+            | BoxIdType | HandleIdType | AnyType | AbstractType _ | UnionType _
+            | FuncType _ | InlineFuncType _ | ProjectionType _ | Str | Slice _ -> None
             | PureFuncType (_, _) -> None (* CAVEAT: This assumes we do *not* have extensionality *)
             | StructType _ -> Some []
             | InductiveType (i0, targs) ->
